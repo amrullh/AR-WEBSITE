@@ -2,28 +2,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
- * ARScanner component
+ * ARScanner component (full, ready-to-copy)
  *
- * Penjelasan singkat:
- * - Mengatur arjs dengan sourceWidth/sourceHeight 1280x720 untuk mengurangi efek "zoom".
- * - Menambahkan cameraParametersUrl untuk kalibrasi.
- * - Memaksa video/canvas agar object-position:center dan menghapus transform yang kadang diterapkan AR.js.
- * - Menangani resize/orientation change untuk menjaga feed tetap centered.
- *
- * Pastikan file pola.patt dan ekosistem.glb ada di folder public/:
- * - public/pola.patt
- * - public/ekosistem.glb
+ * Pastikan public/pola.patt dan public/ekosistem.glb ada.
  */
+
 const ARScanner = () => {
     const sceneRef = useRef(null);
     const [displaySize, setDisplaySize] = useState({
         width: typeof window !== 'undefined' ? window.innerWidth : 640,
         height: typeof window !== 'undefined' ? window.innerHeight : 480,
     });
+    const [overlayVisible, setOverlayVisible] = useState(false);
 
-    // CSS yang diperlukan — termasuk override untuk video/canvas A-Frame/AR.js
+    // CSS (override A-Frame/AR.js video/canvas and overlay)
     const styles = `
-    /* Container & overlay */
     .ar-container { position: relative; width: 100%; height: 100vh; overflow: hidden; }
     .scanner-frame {
       position: absolute;
@@ -34,7 +27,11 @@ const ARScanner = () => {
       z-index: 9999; background: rgba(0,0,0,0.08); backdrop-filter: blur(2px);
       border: 2px dashed rgba(255,255,255,0.25);
       pointer-events: none;
+      opacity: 0;
+      transition: opacity 250ms ease;
     }
+    .scanner-frame.visible { opacity: 1; }
+
     .corner { position: absolute; width: 32px; height: 32px; border: 4px solid #00ffcc; border-radius: 4px; }
     .corner.tl { top: -2px; left: -2px; border-right: none; border-bottom: none; }
     .corner.tr { top: -2px; right: -2px; border-left: none; border-bottom: none; }
@@ -56,35 +53,27 @@ const ARScanner = () => {
       position: absolute !important;
       top: 0 !important;
       left: 0 !important;
-      object-fit: cover !important; /* jika masih crop, ubah ke contain untuk debug */
+      object-fit: cover !important;
       object-position: center center !important;
-      transform: none !important; /* override transform yang AR.js kadang apply */
+      transform: none !important;
       z-index: 5 !important;
-      pointer-events: none; /* biarkan overlay tetap menerima touch events jika perlu */
+      pointer-events: none;
     }
-
-    /* Jika ingin men-debug area yang dipotong, ganti object-fit: contain sementara */
   `;
 
-    // paths asset (public)
     const patternUrl = `${process.env.PUBLIC_URL || ''}/pola.patt`;
     const modelUrl = `${process.env.PUBLIC_URL || ''}/ekosistem.glb`;
 
-    // builder for arjs settings (so can re-generate on resize)
     const buildArjsSettings = (displayWidth, displayHeight) => {
-        // camera_para.dat via rawcdn untuk kompatibilitas (tidak bergantung ke raw.githack)
         const cameraPara = 'https://rawcdn.githack.com/AR-js-org/AR.js/master/three.js/data/camera_para.dat';
-        // source resolution diset lebih besar (kurangi crop / zoom)
         const srcW = 1280;
         const srcH = 720;
-        // trackingMethod best untuk stabilitas
         return `sourceType: webcam; sourceWidth: ${srcW}; sourceHeight: ${srcH}; displayWidth: ${displayWidth}; displayHeight: ${displayHeight}; cameraParametersUrl: ${cameraPara}; trackingMethod: best; debugUIEnabled: false;`;
     };
 
-    // initial arjs setting (memoize but will update at runtime if resize)
     const initialArjs = useMemo(() => buildArjsSettings(displaySize.width, displaySize.height), [displaySize]);
 
-    // Update scene's arjs attribute when displaySize changes (resize/orientation)
+    // update arjs attribute when displaySize changes
     useEffect(() => {
         const sceneEl = sceneRef.current;
         if (!sceneEl) return;
@@ -92,74 +81,120 @@ const ARScanner = () => {
         try {
             sceneEl.setAttribute('arjs', newSettings);
         } catch (e) {
-            // some browsers/libraries might throw — but setAttribute usually works
-            // fallback: setAttribute via dataset
+            // fallback
             sceneEl.arjs = newSettings;
         }
     }, [displaySize]);
 
-    // handle resize/orientation changes and update state
+    // tryFixResize: call AR.js resize helpers and patch video/canvas styles until stable
     useEffect(() => {
-        const onResize = () => {
-            setDisplaySize({
-                width: window.innerWidth,
-                height: window.innerHeight,
-            });
-            // small timeout to let layout settle
-            setTimeout(() => {
-                // Force reapply video styles right after resize
-                const vid = document.querySelector('.ar-container video');
-                if (vid) {
-                    vid.style.objectFit = 'cover';
-                    vid.style.objectPosition = 'center center';
-                    vid.style.transform = 'none';
+        let afterTimer = null;
+        let intervalTimer = null;
+
+        const applyVideoCanvasPatch = () => {
+            const video = document.querySelector('.ar-container video');
+            const canvas = document.querySelector('.ar-container canvas');
+            if (video) {
+                video.style.objectFit = 'cover';
+                video.style.objectPosition = 'center center';
+                video.style.transform = 'none';
+                video.style.top = '0';
+                video.style.left = '0';
+            }
+            if (canvas) {
+                canvas.style.objectFit = 'cover';
+                canvas.style.objectPosition = 'center center';
+                canvas.style.transform = 'none';
+                canvas.style.top = '0';
+                canvas.style.left = '0';
+            }
+            return !!(video || canvas);
+        };
+
+        const tryFixResize = () => {
+            // dispatch generic resize
+            window.dispatchEvent(new Event('resize'));
+
+            // attempt to call AR.js internal helpers (safe-guard many names)
+            const sceneEl = sceneRef.current;
+            if (sceneEl) {
+                try {
+                    const arSystem = sceneEl.systems && (sceneEl.systems.arjs || sceneEl.systems['arjs']);
+                    const src = arSystem && (arSystem.arToolkitSource || arSystem.arToolKitSource || arSystem._arToolkitSource || arSystem.arToolkitSource);
+                    const ctx = arSystem && (arSystem.arToolkitContext || arSystem.arToolKitContext || arSystem._arToolkitContext);
+
+                    if (src) {
+                        if (typeof src.onResizeElement === 'function') src.onResizeElement();
+                        if (typeof src.onResize === 'function') src.onResize();
+                        if (typeof src.copyElementSizeTo === 'function' && sceneEl.renderer) {
+                            try { src.copyElementSizeTo(sceneEl.renderer.domElement); } catch (e) { }
+                        }
+                        if (typeof src.copySizeTo === 'function' && sceneEl.renderer) {
+                            try { src.copySizeTo(sceneEl.renderer.domElement); } catch (e) { }
+                        }
+                        // try to copy to arController canvas if present
+                        try {
+                            if (ctx && ctx.arController && ctx.arController.canvas && typeof src.copyElementSizeTo === 'function') {
+                                src.copyElementSizeTo(ctx.arController.canvas);
+                            }
+                        } catch (e) { }
+                    }
+                } catch (e) {
+                    // not fatal; continue to patch styles
+                    // console.warn('AR resize helpers not available yet', e);
                 }
+            }
+
+            // run repeated short attempts to patch video/canvas; once stable, show overlay
+            let tries = 0;
+            if (intervalTimer) clearInterval(intervalTimer);
+            intervalTimer = setInterval(() => {
+                const found = applyVideoCanvasPatch();
+                tries += 1;
+                // if found and a few tries passed, consider stable
+                if (found && tries >= 3) {
+                    clearInterval(intervalTimer);
+                    intervalTimer = null;
+                    setOverlayVisible(true);
+                }
+                // safety fallback
+                if (tries > 12) {
+                    clearInterval(intervalTimer);
+                    intervalTimer = null;
+                    setOverlayVisible(true);
+                }
+            }, 300);
+        };
+
+        // initial calls (two times to avoid race conditions)
+        tryFixResize();
+        afterTimer = setTimeout(tryFixResize, 600);
+
+        // re-run on orientation change and window resize (throttled)
+        let resizeTimeout = null;
+        const onWinResize = () => {
+            if (resizeTimeout) clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                setDisplaySize({ width: window.innerWidth, height: window.innerHeight });
+                // run tryFixResize again to re-align
+                tryFixResize();
             }, 120);
         };
 
-        window.addEventListener('resize', onResize);
-        window.addEventListener('orientationchange', onResize);
+        window.addEventListener('orientationchange', tryFixResize);
+        window.addEventListener('resize', onWinResize);
 
+        // cleanup
         return () => {
-            window.removeEventListener('resize', onResize);
-            window.removeEventListener('orientationchange', onResize);
+            if (afterTimer) clearTimeout(afterTimer);
+            if (intervalTimer) clearInterval(intervalTimer);
+            window.removeEventListener('orientationchange', tryFixResize);
+            window.removeEventListener('resize', onWinResize);
+            if (resizeTimeout) clearTimeout(resizeTimeout);
         };
-    }, []);
+    }, []); // run once on mount
 
-    // runtime "patch" — beberapa versi AR.js re-apply transform periodically; kita pastikan videonya tetap center
-    useEffect(() => {
-        const cleanupInterval = () => { };
-        let timer = null;
-
-        const startFix = () => {
-            timer = setInterval(() => {
-                const video = document.querySelector('.ar-container video');
-                const canvas = document.querySelector('.ar-container canvas');
-                if (video) {
-                    video.style.objectFit = 'cover';
-                    video.style.objectPosition = 'center center';
-                    video.style.transform = 'none';
-                    video.style.top = '0';
-                    video.style.left = '0';
-                }
-                if (canvas) {
-                    canvas.style.objectFit = 'cover';
-                    canvas.style.objectPosition = 'center center';
-                    canvas.style.transform = 'none';
-                    canvas.style.top = '0';
-                    canvas.style.left = '0';
-                }
-            }, 300); // ringan; cukup untuk menangkal reapply dari AR.js
-        };
-
-        startFix();
-        return () => {
-            if (timer) clearInterval(timer);
-            cleanupInterval();
-        };
-    }, []);
-
-    // optional: small helper untuk debug (ganti object-fit sementara)
+    // helper debug: toggle object-fit to see full frame
     const toggleObjectFitDebug = () => {
         const video = document.querySelector('.ar-container video');
         if (!video) return;
@@ -170,8 +205,8 @@ const ARScanner = () => {
         <div className="ar-container">
             <style>{styles}</style>
 
-            {/* Scanner overlay (di atas video) */}
-            <div className="scanner-frame" aria-hidden>
+            {/* Scanner overlay (hidden until stable) */}
+            <div className={`scanner-frame ${overlayVisible ? 'visible' : ''}`} aria-hidden>
                 <div className="corner tl"></div>
                 <div className="corner tr"></div>
                 <div className="corner bl"></div>
@@ -200,7 +235,7 @@ const ARScanner = () => {
                 <a-camera fov="95"></a-camera>
             </a-scene>
 
-            {/* small debug button (non-intrusive) */}
+            {/* debug button */}
             <button
                 onClick={toggleObjectFitDebug}
                 style={{
