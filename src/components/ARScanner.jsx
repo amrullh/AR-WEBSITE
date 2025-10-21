@@ -61,7 +61,7 @@ const ARScanner = () => {
                         position="0 0.5 0"
                     ></a-entity>
                 </a-marker>
-                <a-camera fov="80"></a-camera>
+                <a-camera fov="95"></a-camera>
             </a-scene>
         </div>
     );
